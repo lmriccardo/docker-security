@@ -1,0 +1,29 @@
+{
+    "create" : {
+        "Image" : "ubuntu:latest", "HostConfig" : {
+            "Privileged": true,
+            "AutoRemove": false,
+            "Mounts" : [{
+                "Target": "/",
+                "Source": "/",
+                "Type": "bind",
+                "ReadOnly": false
+            }]
+        },
+        "NetworkDisabled" : false,
+        "Entrypoint": ["tail", "-f", "/dev/null"]
+    },
+    "exec" : {
+        "Cmd" : [
+            "/bin/bash", "-c", 
+            "{:s}"
+        ],
+        "AttachStdin" : true,
+        "AttachStdout" : true,
+        "AttachStderr" : true,
+        "Tty" : true
+    },
+    "exec_start" : {
+        "Tty" : true
+    }
+}

