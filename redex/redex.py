@@ -12,6 +12,7 @@ import requests
 import time
 import subprocess
 import threading
+from exploits import Exploits
 
 
 APP_NAME = """
@@ -39,8 +40,14 @@ BUGS = []
 c = Console(color_system="truecolor")
 
 CMD_TYPES = [
-    "rvshell"
+    "rvshell",
+    "upload"
 ]
+
+EXPLOITS = {
+    "/privesc/mount_host_fs/" : Exploits.MOUNT_HOST_FS,
+    "/privesc/ssh_host/"      : Exploits.SSH_HOST
+}
 
 
 class Threading:
