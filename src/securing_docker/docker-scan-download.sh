@@ -8,7 +8,7 @@
 # Note: This should work with every Debian-based distribution
 
 cd /home
-wget https://download.docker.com/linux/ubuntu/dists/focal/pool/stable/amd64/docker-scan-plugin_0.7.0~ubuntu-focal_amd64.deb
-sudo dpkg -i docker-scan-plugin_0.7.0\~ubuntu-focal_amd64.deb
+wget https://download.docker.com/linux/ubuntu/dists/hirsute/pool/stable/amd64/docker-scan-plugin_0.17.0~ubuntu-hirsute_amd64.deb
+sudo dpkg -i docker-scan-plugin_0.17.0\~ubuntu-hirsute_amd64.deb
 rm docker-scan-plugin_0.7.0\~ubuntu-focal_amd64.deb
 exit 0
