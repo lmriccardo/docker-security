@@ -133,5 +133,9 @@ for sudou in "${sudoers[@]}"; do
 	fi;
 done
 
+echo -e "[*] ${GREEN}Disablin root access${NC}"
+sudo chsh root -s /usr/sbin/nologin
+check_command_output
+
 echo -e "[*] ${GREEN}Exiting ...${NC}"
 exit 0
